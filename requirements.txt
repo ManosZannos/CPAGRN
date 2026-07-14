@@ -1,0 +1,25 @@
+# CPA-GRN — Requirements
+# Vessel Trajectory Prediction with CPA-Aware Graph Recurrent Network
+#
+# Tested on:
+#   Python 3.10
+#   CUDA 12.4
+#   RTX 4090 (24GB) / DGX A100 (40GB)
+#
+# Install (σε αυτή τη σειρά):
+#   1) pip install torch==2.6.0+cu124 --index-url https://download.pytorch.org/whl/cu124
+#   2) pip install -r requirements.txt
+#
+# Σημείωση: το torch ΔΕΝ περιλαμβάνεται παρακάτω στη λίστα — εγκαθίσταται
+# αποκλειστικά μέσω της εντολής (1) παραπάνω, ώστε να μην κινδυνεύει να
+# αντικατασταθεί από CPU-only build μέσω του προεπιλεγμένου PyPI index.
+
+# ── Data Processing ───────────────────────────────────────────────────────────
+numpy==2.2.6
+pandas==2.3.3
+
+# ── Visualization (για plot_trajectories.py, visualize_attention.py) ──────────
+matplotlib==3.10.9
+
+# ── Standard Library (no install needed) ─────────────────────────────────────
+# argparse, os, sys, json, logging, math, time, glob, re, io, zipfile, warnings

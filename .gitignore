@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+runs/
+outputs/
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+data/
+dataset/
+Logs_train/
+runs_10_10/
