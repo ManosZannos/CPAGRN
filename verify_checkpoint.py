@@ -83,6 +83,7 @@ def main():
     p.add_argument('--full_eval', action='store_true',
                    help='Τρέχει πλήρες evaluation στο test set (αργό, αλλά επιβεβαιώνει ADE/FDE)')
     p.add_argument('--data_dir', type=str, default='dataset/noaa_dec2021_1min')
+    p.add_argument('--batch_size', type=int, default=32)
     args = p.parse_args()
 
     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu_num)
@@ -99,7 +100,6 @@ def main():
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
     model = load_model(args.model, ckpt, args.obs_len, args.pred_len, device)
     n_params = count_params(model)
-
     expected = EXPECTED_PARAMS[args.model].get(args.pred_len)
 
     print('=' * 60)
@@ -125,41 +125,67 @@ def main():
     print('=' * 60)
 
     if args.full_eval:
-        print('\nΤρέχει πλήρες evaluation στο test set...')
+        print('\nΤρέχει πλήρες evaluation στο test set (ίδια λογική με evaluate_cpagrn.py)...')
         from dataset import get_dataloaders, denorm
         import numpy as np
 
-        _, _, test_loader, stats = get_dataloaders(
-            data_dir=args.data_dir, obs_len=args.obs_len, pred_len=args.pred_len,
-            batch_size=32, eval_stride=args.obs_len + args.pred_len,
+        _, val_loader, test_loader, file_stats = get_dataloaders(
+            args.data_dir, args.obs_len, args.pred_len, args.batch_size,
         )
+        loader = test_loader
+
+        # ΚΡΙΣΙΜΟ: χρησιμοποίησε τα stats που είναι αποθηκευμένα ΜΕΣΑ στο ίδιο
+        # το checkpoint (αν υπάρχουν), όχι αυτόματα το global_stats.json —
+        # ίδια λογική με το επίσημο evaluate_cpagrn.py. Αν το dataset
+        # ξαναδημιουργήθηκε ποτέ με ελαφρώς διαφορετικά στατιστικά, η χρήση
+        # του λάθος συνόλου στατιστικών προκαλεί ακριβώς τέτοιου μεγέθους
+        # απόκλιση χωρίς να σημαίνει ότι το checkpoint είναι εσφαλμένο.
+        stats = ckpt.get('stats', None)
+        if stats is None:
+            print('  (Το checkpoint δεν έχει αποθηκευμένα δικά του stats — '
+                  'χρησιμοποιώ το global_stats.json του dataset.)')
+            stats = file_stats
+        else:
+            print('  (Χρησιμοποιώ τα stats που ήταν αποθηκευμένα ΜΕΣΑ στο checkpoint.)')
+
         lon_mean, lon_std = stats['LON']['mean'], stats['LON']['std']
         lat_mean, lat_std = stats['LAT']['mean'], stats['LAT']['std']
 
-        all_ade, all_fde = [], []
+        T = args.pred_len
+        ade_per_horizon = [[] for _ in range(T)]
+        fde_list = []
+
         with torch.no_grad():
-            for obs, pred, mask, counts in test_loader:
-                obs, pred, mask = obs.to(device), pred.to(device), mask.to(device)
-                last_obs = obs[:, :, -1, :2]
-                disp = model(obs, mask=mask)
-                abs_pred = disp + last_obs.unsqueeze(2)
+            for obs, pred_gt, mask, _ in loader:
+                obs, pred_gt, mask = obs.to(device), pred_gt.to(device), mask.to(device)
 
-                pred_lon = denorm(abs_pred[..., 0].cpu().numpy(), lon_mean, lon_std)
-                pred_lat = denorm(abs_pred[..., 1].cpu().numpy(), lat_mean, lat_std)
-                true_lon = denorm(pred[..., 0].cpu().numpy(), lon_mean, lon_std)
-                true_lat = denorm(pred[..., 1].cpu().numpy(), lat_mean, lat_std)
-                mask_np = mask.cpu().numpy().astype(bool)
+                last_obs    = obs[:, :, -1, :2]
+                target_disp = pred_gt - last_obs.unsqueeze(2)
+                pred_disp   = model(obs, mask=mask, stats=stats)
 
-                err = np.sqrt((pred_lon - true_lon)**2 + (pred_lat - true_lat)**2)  # [B,N,T]
-                for b in range(err.shape[0]):
-                    valid_n = mask_np[b]
-                    if valid_n.sum() == 0:
-                        continue
-                    all_ade.extend(err[b, valid_n].mean(axis=-1).tolist())
-                    all_fde.extend(err[b, valid_n, -1].tolist())
+                pred_abs   = (pred_disp   + last_obs.unsqueeze(2)).cpu().numpy()
+                target_abs = (target_disp + last_obs.unsqueeze(2)).cpu().numpy()
+                mask_np    = mask.cpu().numpy()
+                B, N       = mask_np.shape
 
-        ade = float(np.mean(all_ade))
-        fde = float(np.mean(all_fde))
+                pred_lon = denorm(pred_abs[..., 0],   lon_mean, lon_std)
+                pred_lat = denorm(pred_abs[..., 1],   lat_mean, lat_std)
+                true_lon = denorm(target_abs[..., 0], lon_mean, lon_std)
+                true_lat = denorm(target_abs[..., 1], lat_mean, lat_std)
+
+                for b in range(B):
+                    for n in range(N):
+                        if not mask_np[b, n]:
+                            continue
+                        err = np.sqrt((pred_lat[b,n,:] - true_lat[b,n,:])**2 +
+                                      (pred_lon[b,n,:] - true_lon[b,n,:])**2)
+                        for t in range(T):
+                            ade_per_horizon[t].append(err[t])
+                        fde_list.append(err[-1])
+
+        ade_h = [np.mean(h) for h in ade_per_horizon]
+        ade = float(np.mean(ade_h))
+        fde = float(np.mean(fde_list))
         print(f'\nADE (test): {ade:.6f}°')
         print(f'FDE (test): {fde:.6f}°')
 
